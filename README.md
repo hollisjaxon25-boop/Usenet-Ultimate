@@ -341,7 +341,7 @@ docker run -d \
   -p 1337:1337 \
   -v ./config:/app/config \
   --restart unless-stopped \
-  usenet-ultimate:latest
+  ghcr.io/dsmart33/usenet-ultimate:latest
 ```
 
 Or with Docker Compose:
@@ -349,7 +349,7 @@ Or with Docker Compose:
 ```yaml
 services:
   usenet-ultimate:
-    image: usenet-ultimate:latest
+    image: ghcr.io/dsmart33/usenet-ultimate:latest
     container_name: usenet-ultimate
     ports:
       - "1337:1337"
