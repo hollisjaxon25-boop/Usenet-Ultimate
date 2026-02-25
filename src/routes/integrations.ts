@@ -124,7 +124,8 @@ export function createIntegrationRoutes(deps: IntegrationDeps): Router {
       updateSettings({ syncedIndexers: synced });
       res.json({ indexers: synced, total: usenetIndexers.length });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      const msg = error.response?.status === 401 ? 'Invalid API key' : error.message;
+      res.status(500).json({ error: msg });
     }
   });
 
@@ -144,7 +145,7 @@ export function createIntegrationRoutes(deps: IntegrationDeps): Router {
       if (response.data && (response.data.includes('<caps') || response.data.includes('<server'))) {
         res.json({ success: true, message: 'Connected to NZBHydra2 successfully!' });
       } else {
-        res.json({ success: false, message: 'Unexpected response from NZBHydra2' });
+        res.json({ success: false, message: 'Invalid API key' });
       }
     } catch (error: any) {
       const msg = error.response?.status === 401 ? 'Invalid API key' : error.message;
@@ -157,6 +158,22 @@ export function createIntegrationRoutes(deps: IntegrationDeps): Router {
       const url = req.body?.url ?? config.nzbhydraUrl;
       const apiKey = req.body?.apiKey ?? config.nzbhydraApiKey;
       if (!url || !apiKey) return res.status(400).json({ error: 'NZBHydra not configured' });
+
+      // Validate credentials via Newznab caps (also used for capability parsing below)
+      let capsData: string;
+      try {
+        const capsResp = await axios.get(`${url}/api`, {
+          params: { t: 'caps', apikey: apiKey },
+          timeout: 10000,
+        });
+        capsData = capsResp.data;
+        if (!capsData || (!capsData.includes('<caps') && !capsData.includes('<server'))) {
+          return res.status(400).json({ error: 'Invalid API key' });
+        }
+      } catch (authErr: any) {
+        const msg = authErr.response?.status === 401 ? 'Invalid API key' : authErr.message;
+        return res.status(500).json({ error: msg });
+      }
 
       // NZBHydra2 exposes indexer info via its internal API
       let indexerList: { name: string; enabled: boolean }[] = [];
@@ -173,16 +190,10 @@ export function createIntegrationRoutes(deps: IntegrationDeps): Router {
             .map((s: any) => ({ name: s.indexerName || s.indexer, enabled: s.state !== 'DISABLED_USER' }));
         }
       } catch {
-        // Fall back: parse caps response to get indexer info
-        try {
-          const capsResp = await axios.get(`${url}/api`, {
-            params: { t: 'caps', apikey: apiKey },
-            timeout: 10000,
-          });
-          if (capsResp.data) {
-            indexerList = [{ name: 'NZBHydra (All)', enabled: true }];
-          }
-        } catch {
+        // Fall back: caps already validated above, use it for indexer info
+        if (capsData) {
+          indexerList = [{ name: 'NZBHydra (All)', enabled: true }];
+        } else {
           return res.status(500).json({ error: 'Could not retrieve indexer list from NZBHydra2' });
         }
       }
@@ -191,26 +202,20 @@ export function createIntegrationRoutes(deps: IntegrationDeps): Router {
         return res.status(404).json({ error: 'No indexers found in NZBHydra2' });
       }
 
-      // Fetch aggregate capabilities from NZBHydra's Newznab caps endpoint
+      // Parse aggregate capabilities from the caps response we already fetched
       let aggregateCaps: { movieSearchParams: string[]; tvSearchParams: string[] } | undefined;
       try {
-        const capsResp = await axios.get(`${url}/api`, {
-          params: { t: 'caps', apikey: apiKey },
-          timeout: 10000,
-        });
-        if (capsResp.data) {
-          const { parseStringPromise } = await import('xml2js');
-          const parsed = await parseStringPromise(capsResp.data);
-          const searching = parsed?.caps?.searching?.[0];
-          const extractParams = (el: any) => (el?.$?.supportedParams || '').split(',').filter(Boolean);
-          aggregateCaps = {
-            movieSearchParams: extractParams(searching?.['movie-search']?.[0]),
-            tvSearchParams: extractParams(searching?.['tv-search']?.[0]),
-          };
-          console.log(`\u{1F4CB} NZBHydra caps: movie=[${aggregateCaps.movieSearchParams.join(',')}] tv=[${aggregateCaps.tvSearchParams.join(',')}]`);
-        }
+        const { parseStringPromise } = await import('xml2js');
+        const parsed = await parseStringPromise(capsData);
+        const searching = parsed?.caps?.searching?.[0];
+        const extractParams = (el: any) => (el?.$?.supportedParams || '').split(',').filter(Boolean);
+        aggregateCaps = {
+          movieSearchParams: extractParams(searching?.['movie-search']?.[0]),
+          tvSearchParams: extractParams(searching?.['tv-search']?.[0]),
+        };
+        console.log(`\u{1F4CB} NZBHydra caps: movie=[${aggregateCaps.movieSearchParams.join(',')}] tv=[${aggregateCaps.tvSearchParams.join(',')}]`);
       } catch (err: any) {
-        console.warn(`\u26A0\uFE0F  Failed to fetch NZBHydra caps: ${err.message}`);
+        console.warn(`\u26A0\uFE0F  Failed to parse NZBHydra caps: ${err.message}`);
       }
 
       // Merge with existing synced indexers
