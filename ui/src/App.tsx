@@ -452,7 +452,11 @@ function App() {
   }
 
   // ── Computed values ───────────────────────────────────────────────────
-  const hasIndexers = ac.config && ac.config.indexers.length > 0;
+  const hasIndexers = ac.config && (
+    ac.config.indexers.length > 0 ||
+    ac.syncedIndexers.length > 0 ||
+    ac.easynewsEnabled
+  );
   const enabledIndexersCount = ac.config ? ac.config.indexers.filter(i => i.enabled).length : 0;
 
   // ── Main render ───────────────────────────────────────────────────────
@@ -583,10 +587,14 @@ function App() {
           setProwlarrUrl={ac.setProwlarrUrl}
           prowlarrApiKey={ac.prowlarrApiKey}
           setProwlarrApiKey={ac.setProwlarrApiKey}
+          showProwlarrKey={ac.showProwlarrKey}
+          setShowProwlarrKey={ac.setShowProwlarrKey}
           nzbhydraUrl={ac.nzbhydraUrl}
           setNzbhydraUrl={ac.setNzbhydraUrl}
           nzbhydraApiKey={ac.nzbhydraApiKey}
           setNzbhydraApiKey={ac.setNzbhydraApiKey}
+          showNzbhydraKey={ac.showNzbhydraKey}
+          setShowNzbhydraKey={ac.setShowNzbhydraKey}
           syncedIndexers={ac.syncedIndexers}
           setSyncedIndexers={ac.setSyncedIndexers}
           syncStatus={ac.syncStatus}
@@ -605,7 +613,6 @@ function App() {
           getAvailableMovieMethods={getAvailableMovieMethods}
           getAvailableTvMethods={getAvailableTvMethods}
           renderMethodLabel={renderMethodLabel}
-          showAddIndexer={ac.showAddIndexer}
           setShowAddIndexer={ac.setShowAddIndexer}
           expandedIndexer={ac.expandedIndexer}
           setExpandedIndexer={ac.setExpandedIndexer}
@@ -919,8 +926,8 @@ function App() {
         {/* Tab Content - Install */}
         {ac.activeTab === 'install' && ac.config && (
           <InstallTab
-            config={ac.config}
             manifestKey={auth.manifestKey}
+            hasIndexers={!!hasIndexers}
           />
         )}
       </div>

@@ -99,12 +99,16 @@ interface IndexManagerOverlayProps {
   setProwlarrUrl: React.Dispatch<React.SetStateAction<string>>;
   prowlarrApiKey: string;
   setProwlarrApiKey: React.Dispatch<React.SetStateAction<string>>;
+  showProwlarrKey: boolean;
+  setShowProwlarrKey: React.Dispatch<React.SetStateAction<boolean>>;
 
   // NZBHydra
   nzbhydraUrl: string;
   setNzbhydraUrl: React.Dispatch<React.SetStateAction<string>>;
   nzbhydraApiKey: string;
   setNzbhydraApiKey: React.Dispatch<React.SetStateAction<string>>;
+  showNzbhydraKey: boolean;
+  setShowNzbhydraKey: React.Dispatch<React.SetStateAction<boolean>>;
 
   // Sync state
   syncedIndexers: SyncedIndexer[];
@@ -131,7 +135,6 @@ interface IndexManagerOverlayProps {
   renderMethodLabel: (m: { value: string; label: string }) => React.ReactNode;
 
   // Newznab indexer management
-  showAddIndexer: boolean;
   setShowAddIndexer: React.Dispatch<React.SetStateAction<boolean>>;
   expandedIndexer: string | null;
   setExpandedIndexer: React.Dispatch<React.SetStateAction<string | null>>;
@@ -211,10 +214,14 @@ export function IndexManagerOverlay({
   setProwlarrUrl,
   prowlarrApiKey,
   setProwlarrApiKey,
+  showProwlarrKey,
+  setShowProwlarrKey,
   nzbhydraUrl,
   setNzbhydraUrl,
   nzbhydraApiKey,
   setNzbhydraApiKey,
+  showNzbhydraKey,
+  setShowNzbhydraKey,
   syncedIndexers,
   setSyncedIndexers,
   syncStatus,
@@ -233,7 +240,6 @@ export function IndexManagerOverlay({
   getAvailableMovieMethods,
   getAvailableTvMethods,
   renderMethodLabel,
-  showAddIndexer: _showAddIndexer,
   setShowAddIndexer,
   expandedIndexer,
   setExpandedIndexer,
@@ -249,6 +255,16 @@ export function IndexManagerOverlay({
   handleReorderIndexer,
   fetchIndexers,
 }: IndexManagerOverlayProps) {
+  /** Reset all sync-related UI state (called when credentials change or manager switches) */
+  const resetSyncState = () => {
+    setSyncedIndexers([]);
+    setSelectedSyncedIndexer(null);
+    setSyncStatus('idle');
+    setSyncMessage('');
+    setConnectionTestStatus('idle');
+    setConnectionTestMessage('');
+  };
+
   return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" onClick={onClose}>
           <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 rounded-xl border border-slate-700/50 shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
@@ -272,11 +288,7 @@ export function IndexManagerOverlay({
                     const newManager = e.target.value as 'newznab' | 'prowlarr' | 'nzbhydra';
                     setIndexManager(newManager);
                     if (config) setConfig({ ...config, indexManager: newManager });
-                    // Clear stale synced indexers from previous manager
-                    setSyncedIndexers([]);
-                    setSelectedSyncedIndexer(null);
-                    setSyncMessage('');
-                    setSyncStatus('idle');
+                    resetSyncState();
                     // Auto-sync indexers for the new manager if credentials are available
                     if (newManager === 'prowlarr' && prowlarrUrl && prowlarrApiKey) {
                       setSyncStatus('syncing');
@@ -796,11 +808,22 @@ export function IndexManagerOverlay({
                 <div className="space-y-4 p-4 bg-slate-900/50 rounded-lg border border-blue-500/30">
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-2">Prowlarr URL</label>
-                    <input type="text" value={prowlarrUrl} onChange={(e) => setProwlarrUrl(e.target.value)} placeholder="http://localhost:9696" className="input" />
+                    <input type="text" value={prowlarrUrl} onChange={(e) => { setProwlarrUrl(e.target.value); resetSyncState(); }} placeholder="http://localhost:9696" className="input" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-2">API Key</label>
-                    <input type="password" value={prowlarrApiKey} onChange={(e) => setProwlarrApiKey(e.target.value)} placeholder="Your Prowlarr API key" className="input" />
+                    <div className="relative">
+                      <input type={showProwlarrKey ? 'text' : 'password'} value={prowlarrApiKey} onChange={(e) => { setProwlarrApiKey(e.target.value); resetSyncState(); }} placeholder="Your Prowlarr API key" className="input pr-9" />
+                      {prowlarrApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => setShowProwlarrKey(v => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                        >
+                          {showProwlarrKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Test + Sync buttons */}
@@ -809,6 +832,8 @@ export function IndexManagerOverlay({
                       onClick={async () => {
                         setConnectionTestStatus('testing');
                         setConnectionTestMessage('');
+                        setSyncStatus('idle');
+                        setSyncMessage('');
                         try {
                           const resp = await apiFetch('/api/prowlarr/test', {
                             method: 'POST',
@@ -835,6 +860,8 @@ export function IndexManagerOverlay({
                       onClick={async () => {
                         setSyncStatus('syncing');
                         setSyncMessage('');
+                        setConnectionTestStatus('idle');
+                        setConnectionTestMessage('');
                         setSelectedSyncedIndexer(null);
                         try {
                           const resp = await apiFetch('/api/prowlarr/sync', {
@@ -1048,11 +1075,22 @@ export function IndexManagerOverlay({
                 <div className="space-y-4 p-4 bg-slate-900/50 rounded-lg border border-blue-500/30">
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-2">NZBHydra2 URL</label>
-                    <input type="text" value={nzbhydraUrl} onChange={(e) => setNzbhydraUrl(e.target.value)} placeholder="http://localhost:5076" className="input" />
+                    <input type="text" value={nzbhydraUrl} onChange={(e) => { setNzbhydraUrl(e.target.value); resetSyncState(); }} placeholder="http://localhost:5076" className="input" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-2">API Key</label>
-                    <input type="password" value={nzbhydraApiKey} onChange={(e) => setNzbhydraApiKey(e.target.value)} placeholder="Your NZBHydra2 API key" className="input" />
+                    <div className="relative">
+                      <input type={showNzbhydraKey ? 'text' : 'password'} value={nzbhydraApiKey} onChange={(e) => { setNzbhydraApiKey(e.target.value); resetSyncState(); }} placeholder="Your NZBHydra2 API key" className="input pr-9" />
+                      {nzbhydraApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => setShowNzbhydraKey(v => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                        >
+                          {showNzbhydraKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Test + Sync buttons */}
@@ -1061,6 +1099,8 @@ export function IndexManagerOverlay({
                       onClick={async () => {
                         setConnectionTestStatus('testing');
                         setConnectionTestMessage('');
+                        setSyncStatus('idle');
+                        setSyncMessage('');
                         try {
                           const resp = await apiFetch('/api/nzbhydra/test', {
                             method: 'POST',
@@ -1087,6 +1127,8 @@ export function IndexManagerOverlay({
                       onClick={async () => {
                         setSyncStatus('syncing');
                         setSyncMessage('');
+                        setConnectionTestStatus('idle');
+                        setConnectionTestMessage('');
                         setSelectedSyncedIndexer(null);
                         try {
                           const resp = await apiFetch('/api/nzbhydra/sync', {

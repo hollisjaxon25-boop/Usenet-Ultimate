@@ -67,6 +67,8 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     indexers: config.indexers.length,
+    syncedIndexers: (config.syncedIndexers || []).length,
+    easynewsEnabled: config.easynewsEnabled ?? false,
     version: APP_VERSION,
   });
 });
@@ -199,10 +201,11 @@ process.on('SIGINT', () => {
 app.listen(PORT, () => {
   console.log(`\n\u{1F680} Usenet Ultimate is running!\n`);
   console.log(`\u{1F3A8} Configuration UI: http://localhost:${PORT}`);
-  console.log(`\u{1F4CB} Configured indexers: ${config.indexers.length}`);
+  console.log(`\u{1F4CB} Configured indexers: ${config.indexers.length} Newznab, ${(config.syncedIndexers || []).length} synced${config.easynewsEnabled ? ', EasyNews enabled' : ''}`);
   console.log(`\u{1F512} Auth: ${hasAnyUsers() ? 'Configured' : 'Setup required (first run)'}\n`);
 
-  if (config.indexers.length === 0) {
-    console.warn('\u26A0\uFE0F  No indexers configured! Please add indexers in .env file\n');
+  const totalSources = config.indexers.length + (config.syncedIndexers || []).length + (config.easynewsEnabled ? 1 : 0);
+  if (totalSources === 0) {
+    console.warn('\u26A0\uFE0F  No indexers configured! Please add indexers via the UI or configure Prowlarr/NZBHydra/EasyNews\n');
   }
 });

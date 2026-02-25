@@ -104,6 +104,9 @@ export function useAppConfig(apiFetch: ApiFetch, _authStatus: string) {
   const [showTmdbKey, setShowTmdbKey] = useState(false);
   const [showTvdbKey, setShowTvdbKey] = useState(false);
 
+  const [showProwlarrKey, setShowProwlarrKey] = useState(false);
+  const [showNzbhydraKey, setShowNzbhydraKey] = useState(false);
+
   // ─── Prowlarr / NZBHydra ───────────────────────────────────────────
   const [prowlarrUrl, setProwlarrUrl] = useState('http://localhost:9696');
   const [prowlarrApiKey, setProwlarrApiKey] = useState('');
@@ -376,7 +379,6 @@ export function useAppConfig(apiFetch: ApiFetch, _authStatus: string) {
   // Auto-save: synced indexers (Prowlarr/NZBHydra per-indexer settings)
   useEffect(() => {
     if (!initialLoadDone.current) return;
-    if (syncedIndexers.length === 0) return;
     const timer = setTimeout(() => saveSettings({ syncedIndexers }), 500);
     return () => clearTimeout(timer);
   }, [syncedIndexers, saveSettings]);
@@ -1069,6 +1071,8 @@ export function useAppConfig(apiFetch: ApiFetch, _authStatus: string) {
     tvdbKeyStatus, setTvdbKeyStatus,
     showTmdbKey, setShowTmdbKey,
     showTvdbKey, setShowTvdbKey,
+    showProwlarrKey, setShowProwlarrKey,
+    showNzbhydraKey, setShowNzbhydraKey,
 
     // Prowlarr / NZBHydra
     prowlarrUrl, setProwlarrUrl,
