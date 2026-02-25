@@ -5,6 +5,29 @@
  * edition, release group, clean title, and provides byte formatting.
  */
 
+import { parseTorrentTitle } from '@viren070/parse-torrent-title';
+
+// ISO 639-1 code → display name mapping for language detection
+const LANG_CODE_TO_DISPLAY: Record<string, string> = {
+  'en': 'English', 'ja': 'Japanese', 'zh': 'Chinese', 'ru': 'Russian',
+  'ar': 'Arabic', 'pt': 'Portuguese', 'es': 'Spanish', 'fr': 'French',
+  'de': 'German', 'it': 'Italian', 'ko': 'Korean', 'hi': 'Hindi',
+  'bn': 'Bengali', 'pa': 'Punjabi', 'mr': 'Marathi', 'gu': 'Gujarati',
+  'ta': 'Tamil', 'te': 'Telugu', 'kn': 'Kannada', 'ml': 'Malayalam',
+  'th': 'Thai', 'vi': 'Vietnamese', 'id': 'Indonesian', 'tr': 'Turkish',
+  'he': 'Hebrew', 'fa': 'Persian', 'uk': 'Ukrainian', 'el': 'Greek',
+  'lt': 'Lithuanian', 'lv': 'Latvian', 'et': 'Estonian', 'pl': 'Polish',
+  'cs': 'Czech', 'sk': 'Slovak', 'hu': 'Hungarian', 'ro': 'Romanian',
+  'bg': 'Bulgarian', 'sr': 'Serbian', 'hr': 'Croatian', 'sl': 'Slovenian',
+  'nl': 'Dutch', 'da': 'Danish', 'fi': 'Finnish', 'sv': 'Swedish',
+  'no': 'Norwegian', 'ms': 'Malay', 'es-419': 'Latino', 'zh-tw': 'Chinese',
+  'multi audio': 'Multi', 'dual audio': 'Dual Audio', 'multi subs': 'Multi',
+};
+
+// Cache parsed results to avoid re-parsing the same title (capped to prevent unbounded growth)
+const LANGUAGE_CACHE_MAX = 10_000;
+const languageCache = new Map<string, string>();
+
 export function parseQuality(title: string): string {
   const titleLower = title.toLowerCase();
 
@@ -103,66 +126,47 @@ export function parseAudioTag(title: string): string {
 }
 
 export function parseLanguage(title: string): string {
-  const t = title.toLowerCase();
+  // Check cache first to avoid re-parsing identical titles
+  const cached = languageCache.get(title);
+  if (cached !== undefined) return cached;
 
-  // Word-boundary helper: matches the term surrounded by common separators or string edges
-  const wb = (pattern: string) => new RegExp(`(?:^|[\\s.\\-_\\[\\(])(?:${pattern})(?:$|[\\s.\\-_\\]\\)])`, 'i');
+  let result: string;
 
-  // Multi/Dual/Dubbed first (broad tags)
-  if (wb('multi').test(t)) return 'Multi';
-  if (wb('dual[.\\-_ ]?(audio|lang(uage)?|flac|ac3|aac2?)').test(t)) return 'Dual Audio';
-  if (wb('dub(s|bed|bing)?').test(t)) return 'Dubbed';
+  try {
+    const parsed = parseTorrentTitle(title);
+    const langs = parsed.languages;
 
-  // Specific languages — ordered by global prevalence
-  if (wb('english|eng').test(t)) return 'English';
-  if (wb('japanese|jap|jpn').test(t)) return 'Japanese';
-  if (wb('chinese|chi').test(t)) return 'Chinese';
-  if (wb('russian|rus').test(t)) return 'Russian';
-  if (wb('arabic|ara').test(t)) return 'Arabic';
-  if (wb('portuguese').test(t)) return 'Portuguese';
-  if (wb('spanish|spa|esp').test(t)) return 'Spanish';
-  if (wb('french|fra|vf|vff|vfi|vf2|vfq|truefrench').test(t)) return 'French';
-  if (wb('deu(tsch)?(land)?|ger(man)?').test(t)) return 'German';
-  if (wb('italian|ita').test(t)) return 'Italian';
-  if (wb('korean|kor').test(t)) return 'Korean';
-  if (wb('hindi|hin').test(t)) return 'Hindi';
-  if (wb('bengali|ben(?![.\\-_ ]?the[.\\-_ ]?men)').test(t)) return 'Bengali';
-  if (wb('punjabi|pan').test(t)) return 'Punjabi';
-  if (wb('marathi|mar').test(t)) return 'Marathi';
-  if (wb('gujarati|guj').test(t)) return 'Gujarati';
-  if (wb('tamil|tam').test(t)) return 'Tamil';
-  if (wb('telugu|tel').test(t)) return 'Telugu';
-  if (wb('kannada|kan').test(t)) return 'Kannada';
-  if (wb('malayalam|mal').test(t)) return 'Malayalam';
-  if (wb('thai|tha').test(t)) return 'Thai';
-  if (wb('vietnamese|vie').test(t)) return 'Vietnamese';
-  if (wb('indonesian|ind').test(t)) return 'Indonesian';
-  if (wb('turkish|tur').test(t)) return 'Turkish';
-  if (wb('hebrew|heb').test(t)) return 'Hebrew';
-  if (wb('persian|per').test(t)) return 'Persian';
-  if (wb('ukrainian|ukr').test(t)) return 'Ukrainian';
-  if (wb('greek|ell').test(t)) return 'Greek';
-  if (wb('lithuanian|lit').test(t)) return 'Lithuanian';
-  if (wb('latvian|lav').test(t)) return 'Latvian';
-  if (wb('estonian|est').test(t)) return 'Estonian';
-  if (wb('polish|pol').test(t)) return 'Polish';
-  if (wb('czech|cze').test(t)) return 'Czech';
-  if (wb('slovak|slo').test(t)) return 'Slovak';
-  if (wb('hungarian|hun').test(t)) return 'Hungarian';
-  if (wb('romanian|rum').test(t)) return 'Romanian';
-  if (wb('bulgarian|bul').test(t)) return 'Bulgarian';
-  if (wb('serbian|srp').test(t)) return 'Serbian';
-  if (wb('croatian|hrv').test(t)) return 'Croatian';
-  if (wb('slovenian|slv').test(t)) return 'Slovenian';
-  if (wb('dutch|dut').test(t)) return 'Dutch';
-  if (wb('danish|dan').test(t)) return 'Danish';
-  if (wb('finnish|fin').test(t)) return 'Finnish';
-  if (wb('swedish|swe').test(t)) return 'Swedish';
-  if (wb('norwegian|nor').test(t)) return 'Norwegian';
-  if (wb('malay').test(t)) return 'Malay';
-  if (wb('latino|lat').test(t)) return 'Latino';
+    if (!langs || langs.length === 0) {
+      // No language detected — check if dubbed, otherwise assume English
+      result = parsed.dubbed ? 'Dubbed' : 'English';
+    } else if (langs.includes('multi audio') || langs.includes('multi subs')) {
+      result = 'Multi';
+    } else if (langs.includes('dual audio')) {
+      result = 'Dual Audio';
+    } else {
+      // Multiple specific languages → Multi, single → look up display name
+      if (langs.length > 1) {
+        result = 'Multi';
+      } else {
+        result = LANG_CODE_TO_DISPLAY[langs[0]] ?? 'English';
+      }
+    }
+  } catch {
+    // Library threw — can't determine language
+    result = 'Unknown';
+  }
 
-  return 'Unknown';
+  // Cap cache size by evicting oldest half when full
+  if (languageCache.size >= LANGUAGE_CACHE_MAX) {
+    const evictCount = LANGUAGE_CACHE_MAX / 2;
+    let i = 0;
+    for (const key of languageCache.keys()) {
+      if (i++ >= evictCount) break;
+      languageCache.delete(key);
+    }
+  }
+  languageCache.set(title, result);
+  return result;
 }
 
 export function formatBytes(bytes: number): string {
