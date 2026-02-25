@@ -37,12 +37,16 @@ export function buildStreamDisplay(
     const sizeCodecSpecs = [`  💾 ${data.displaySize}`];
     if (data.encode !== 'Unknown') sizeCodecSpecs.push(`⚙️ ${data.encode}`);
     const sizeCodecLine = sizeCodecSpecs.join('  ');
+    const editionLangSpecs: string[] = [];
+    if (data.edition && data.edition !== 'Standard') editionLangSpecs.push(`🏷️ ${data.edition}`);
+    if (data.language && data.language !== 'Unknown') editionLangSpecs.push(`🗣️ ${data.language}`);
+    const editionLangLine = editionLangSpecs.length > 0 ? `  ${editionLangSpecs.join('  ')}` : null;
     const tagSpecs: string[] = [];
     if (data.visualTag !== 'Unknown') tagSpecs.push(`🎨 ${data.visualTag}`);
     if (data.audioTag !== 'Unknown') tagSpecs.push(`🔊 ${data.audioTag}`);
     const tagLine = tagSpecs.length > 0 ? `  ${tagSpecs.join('  ')}` : null;
     const metaLine = `  ${data.releaseGroup} ⚬ ${data.indexer}`;
-    const streamTitle = [titleLine, sizeCodecLine, tagLine, metaLine, data.providersLine || null]
+    const streamTitle = [titleLine, editionLangLine, sizeCodecLine, tagLine, metaLine, data.providersLine || null]
       .filter(Boolean).join('\n');
     return { name: streamName, title: streamTitle };
   }
