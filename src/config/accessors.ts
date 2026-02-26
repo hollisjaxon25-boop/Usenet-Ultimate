@@ -287,6 +287,12 @@ export const config: Config = {
   get nzbhydraApiKey() {
     return envStr('NZBHYDRA_API_KEY') || configData.nzbhydraApiKey;
   },
+  get nzbhydraUsername() {
+    return envStr('NZBHYDRA_USERNAME') || configData.nzbhydraUsername || '';
+  },
+  get nzbhydraPassword() {
+    return envStr('NZBHYDRA_PASSWORD') || configData.nzbhydraPassword || '';
+  },
   get zyclopsEndpoint() {
     return configData.zyclopsEndpoint || ZYCLOPS_DEFAULT_ENDPOINT;
   },

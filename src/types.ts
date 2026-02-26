@@ -112,6 +112,8 @@ export interface Config {
   prowlarrApiKey?: string;
   nzbhydraUrl?: string;
   nzbhydraApiKey?: string;
+  nzbhydraUsername?: string;
+  nzbhydraPassword?: string;
   zyclopsEndpoint?: string;            // Zyclops API endpoint URL (default: https://zyclops.elfhosted.com)
   nzbdavUrl?: string;
   nzbdavApiKey?: string;
