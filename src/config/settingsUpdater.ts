@@ -18,6 +18,8 @@ export function updateSettings(settings: {
   prowlarrApiKey?: string;
   nzbhydraUrl?: string;
   nzbhydraApiKey?: string;
+  nzbhydraUsername?: string;
+  nzbhydraPassword?: string;
   zyclopsEndpoint?: string;
   nzbdavUrl?: string;
   nzbdavApiKey?: string;
@@ -99,6 +101,12 @@ export function updateSettings(settings: {
   }
   if (settings.nzbhydraApiKey !== undefined) {
     configData.nzbhydraApiKey = settings.nzbhydraApiKey;
+  }
+  if (settings.nzbhydraUsername !== undefined) {
+    configData.nzbhydraUsername = settings.nzbhydraUsername;
+  }
+  if (settings.nzbhydraPassword !== undefined) {
+    configData.nzbhydraPassword = settings.nzbhydraPassword;
   }
   if (settings.zyclopsEndpoint !== undefined) {
     configData.zyclopsEndpoint = settings.zyclopsEndpoint;

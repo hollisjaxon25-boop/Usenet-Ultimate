@@ -17,11 +17,19 @@ import { config } from '../config/index.js';
 import { getLatestVersions } from '../versionFetcher.js';
 
 export class NzbhydraSearcher {
+  private authHeader?: string;
+
   constructor(
     private url: string,
     private apiKey: string,
     private indexers: SyncedIndexer[],
-  ) {}
+    username?: string,
+    password?: string,
+  ) {
+    if (username && password) {
+      this.authHeader = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
+    }
+  }
 
   async searchMovie(
     imdbId: string,
@@ -358,10 +366,13 @@ export class NzbhydraSearcher {
       console.log(`📤 NZBHydra request: ${url}`);
       console.log(`   Params:`, JSON.stringify(logParams));
 
+      const headers: Record<string, string> = { 'User-Agent': userAgent };
+      if (this.authHeader) headers['Authorization'] = this.authHeader;
+
       const response = await axios.get(url, {
         params,
         timeout: 30000,
-        headers: { 'User-Agent': userAgent },
+        headers,
       });
 
       const { results, total } = await parseNewznabXmlWithMeta(response.data);
@@ -381,7 +392,7 @@ export class NzbhydraSearcher {
             const pageResp = await axios.get(url, {
               params: { ...params, offset: currentOffset },
               timeout: 30000,
-              headers: { 'User-Agent': userAgent },
+              headers,
             });
             const pageData = await parseNewznabXmlWithMeta(pageResp.data);
             if (pageData.results.length === 0) break;

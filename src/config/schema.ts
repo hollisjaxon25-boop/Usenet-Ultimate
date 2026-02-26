@@ -26,6 +26,8 @@ export interface ConfigData {
   prowlarrApiKey?: string;
   nzbhydraUrl?: string;
   nzbhydraApiKey?: string;
+  nzbhydraUsername?: string;
+  nzbhydraPassword?: string;
   nzbdavUrl?: string;
   nzbdavApiKey?: string;
   nzbdavWebdavUrl?: string;
@@ -151,7 +153,7 @@ const ENV_OVERRIDES: readonly string[] = [
   'STREAMING_MODE', 'INDEX_MANAGER',
   'NZBDAV_URL', 'NZBDAV_API_KEY', 'NZBDAV_WEBDAV_URL', 'NZBDAV_WEBDAV_USER', 'NZBDAV_WEBDAV_PASS',
   'PROWLARR_URL', 'PROWLARR_API_KEY',
-  'NZBHYDRA_URL', 'NZBHYDRA_API_KEY',
+  'NZBHYDRA_URL', 'NZBHYDRA_API_KEY', 'NZBHYDRA_USERNAME', 'NZBHYDRA_PASSWORD',
   'EASYNEWS_ENABLED', 'EASYNEWS_USERNAME', 'EASYNEWS_PASSWORD',
   'PROXY_MODE', 'PROXY_URL',
   'HEALTH_CHECK_ENABLED', 'HEALTH_CHECK_NNTP_HOST', 'HEALTH_CHECK_NNTP_PORT',

@@ -433,6 +433,8 @@ These are migrated into `config/config.json` on first startup. After that, manag
 | `PROWLARR_API_KEY` | — | Prowlarr API key |
 | `NZBHYDRA_URL` | — | NZBHydra instance URL |
 | `NZBHYDRA_API_KEY` | — | NZBHydra API key |
+| `NZBHYDRA_USERNAME` | — | NZBHydra username (required only if auth is enabled) |
+| `NZBHYDRA_PASSWORD` | — | NZBHydra password (required only if auth is enabled) |
 
 #### NZBDav Connection
 

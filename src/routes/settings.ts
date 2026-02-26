@@ -50,6 +50,8 @@ function buildConfigResponse(config: Config) {
     prowlarrApiKey: config.prowlarrApiKey,
     nzbhydraUrl: config.nzbhydraUrl,
     nzbhydraApiKey: config.nzbhydraApiKey,
+    nzbhydraUsername: config.nzbhydraUsername,
+    nzbhydraPassword: config.nzbhydraPassword,
     nzbdavUrl: config.nzbdavUrl,
     nzbdavApiKey: config.nzbdavApiKey,
     nzbdavWebdavUrl: config.nzbdavWebdavUrl,
