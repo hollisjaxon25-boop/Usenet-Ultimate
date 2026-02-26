@@ -24,10 +24,6 @@ const LANG_CODE_TO_DISPLAY: Record<string, string> = {
   'multi audio': 'Multi', 'dual audio': 'Dual Audio', 'multi subs': 'Multi',
 };
 
-// Cache parsed results to avoid re-parsing the same title (capped to prevent unbounded growth)
-const LANGUAGE_CACHE_MAX = 10_000;
-const languageCache = new Map<string, string>();
-
 export function parseQuality(title: string): string {
   const titleLower = title.toLowerCase();
 
@@ -126,47 +122,30 @@ export function parseAudioTag(title: string): string {
 }
 
 export function parseLanguage(title: string): string {
-  // Check cache first to avoid re-parsing identical titles
-  const cached = languageCache.get(title);
-  if (cached !== undefined) return cached;
-
-  let result: string;
-
   try {
     const parsed = parseTorrentTitle(title);
     const langs = parsed.languages;
 
     if (!langs || langs.length === 0) {
-      // No language detected — check if dubbed, otherwise assume English
-      result = parsed.dubbed ? 'Dubbed' : 'English';
+      // No language tag found — assume English unless dubbed
+      return parsed.dubbed ? 'Dubbed' : 'English';
     } else if (langs.includes('multi audio') || langs.includes('multi subs')) {
-      result = 'Multi';
+      // multi-audio or multi-subtitle
+      return 'Multi';
     } else if (langs.includes('dual audio')) {
-      result = 'Dual Audio';
+      // dual audio
+      return 'Dual Audio';
+    } else if (langs.length > 1) {
+      // Multiple languages detected
+      return 'Multi';
     } else {
-      // Multiple specific languages → Multi, single → look up display name
-      if (langs.length > 1) {
-        result = 'Multi';
-      } else {
-        result = LANG_CODE_TO_DISPLAY[langs[0]] ?? 'English';
-      }
+      // Single language — look up display name, unknown if no mapping exists
+      return LANG_CODE_TO_DISPLAY[langs[0]] ?? 'Unknown';
     }
   } catch {
     // Library threw — can't determine language
-    result = 'Unknown';
+    return 'Unknown';
   }
-
-  // Cap cache size by evicting oldest half when full
-  if (languageCache.size >= LANGUAGE_CACHE_MAX) {
-    const evictCount = LANGUAGE_CACHE_MAX / 2;
-    let i = 0;
-    for (const key of languageCache.keys()) {
-      if (i++ >= evictCount) break;
-      languageCache.delete(key);
-    }
-  }
-  languageCache.set(title, result);
-  return result;
 }
 
 export function formatBytes(bytes: number): string {
