@@ -131,7 +131,7 @@ export async function indexManagerSearch(ctx: SearchContext): Promise<any[]> {
     }
 
     const startTime = Date.now();
-    const searcher = new NzbhydraSearcher(config.nzbhydraUrl, config.nzbhydraApiKey, searchIndexers);
+    const searcher = new NzbhydraSearcher(config.nzbhydraUrl, config.nzbhydraApiKey, searchIndexers, config.nzbhydraUsername, config.nzbhydraPassword);
 
     try {
       let results: any[];
