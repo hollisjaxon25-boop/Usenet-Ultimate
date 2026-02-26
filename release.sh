@@ -259,8 +259,6 @@ if [ "$DO_DOCKER" = true ]; then
       --build-arg VERSION="${NEW_VERSION}" \
       -t "${GHCR_IMAGE}:v${NEW_VERSION}" \
       -t "${GHCR_IMAGE}:latest" \
-      -t "${IMAGE_NAME}:v${NEW_VERSION}" \
-      -t "${IMAGE_NAME}:latest" \
       --push \
       .
     ok "Pushed ${GHCR_IMAGE}:v${NEW_VERSION} (amd64 + arm64)"
