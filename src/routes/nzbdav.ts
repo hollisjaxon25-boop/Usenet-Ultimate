@@ -5,13 +5,18 @@
  * GET    /api/nzbdav/cache  — Stream cache stats
  * DELETE /api/nzbdav/cache  — Clear stream cache
  *
- * Also mounts the key-protected stream proxy:
- *   GET /:manifestKey/nzbdav/stream — NZBDav stream proxy (mounted separately in server.ts)
+ * Also mounts the key-protected stream and video proxy:
+ *   GET /:manifestKey/nzbdav/stream — NZBDav stream handler (mounted separately in server.ts)
+ *   GET /:manifestKey/nzbdav/v      — WebDAV video proxy (adds auth server-side for ExoPlayer compat)
  */
 
 import { Router } from 'express';
+import http from 'http';
+import https from 'https';
+import { PassThrough } from 'stream';
 import type { Config } from '../types.js';
 import type { NZBDavConfig } from '../nzbdav/index.js';
+import { encodeWebdavPath } from '../nzbdav/utils.js';
 
 interface NzbdavDeps {
   config: Config;
@@ -26,6 +31,8 @@ interface NzbdavDeps {
 export function createNzbdavRoutes(deps: NzbdavDeps): Router {
   const router = Router();
   const { config, getCacheStats, clearStreamCache, getLatestVersions } = deps;
+
+  const TEST_CONNECTION_TIMEOUT_MS = 15_000;
 
   // NZBDav test connection endpoint
   router.post('/test', async (req, res) => {
@@ -42,7 +49,8 @@ export function createNzbdavRoutes(deps: NzbdavDeps): Router {
       const nzbdavHeaders: Record<string, string> = apiKey ? { 'X-Api-Key': apiKey, 'User-Agent': userAgent3 } : { 'User-Agent': userAgent3 };
       console.log('\u{1F4E4} Request to test NZBDav connection:', { url: testUrl.toString(), headers: apiKey ? { 'X-Api-Key': '[REDACTED]', 'User-Agent': userAgent3 } : { 'User-Agent': userAgent3 } });
       const nzbdavResponse = await fetch(testUrl.toString(), {
-        headers: nzbdavHeaders
+        headers: nzbdavHeaders,
+        signal: AbortSignal.timeout(TEST_CONNECTION_TIMEOUT_MS),
       });
 
       if (!nzbdavResponse.ok && nzbdavResponse.status !== 401) {
@@ -62,7 +70,8 @@ export function createNzbdavRoutes(deps: NzbdavDeps): Router {
         console.log('\u{1F4E4} Request to test WebDAV connection:', { url: webdavTestUrl.toString(), method: 'PROPFIND', headers: webdavUser && webdavPassword ? { 'Authorization': 'Basic [REDACTED]', 'User-Agent': userAgent4 } : { 'User-Agent': userAgent4 } });
         const webdavResponse = await fetch(webdavTestUrl.toString(), {
           method: 'PROPFIND',
-          headers: { ...webdavHeaders, 'Depth': '0' }
+          headers: { ...webdavHeaders, 'Depth': '0' },
+          signal: AbortSignal.timeout(TEST_CONNECTION_TIMEOUT_MS),
         });
 
         if (webdavResponse.status === 401 || webdavResponse.status === 403) {
@@ -103,11 +112,13 @@ export function createNzbdavRoutes(deps: NzbdavDeps): Router {
         formData.append('nzbFile', new Blob([testNzb], { type: 'application/x-nzb' }), 'test.nzb');
 
         const userAgent2 = config.userAgents?.nzbdavOperations || getLatestVersions().chrome;
-        console.log('\u{1F4E4} Request to test NZB submission:', { url: nzbApiUrl, method: 'POST', headers: { 'Content-Type': 'multipart/form-data', 'User-Agent': userAgent2 } });
+        const redactedNzbApiUrl = apiKey ? nzbApiUrl.replace(apiKey, '[REDACTED]') : nzbApiUrl;
+        console.log('\u{1F4E4} Request to test NZB submission:', { url: redactedNzbApiUrl, method: 'POST', headers: { 'Content-Type': 'multipart/form-data', 'User-Agent': userAgent2 } });
         const testNzbResponse = await fetch(nzbApiUrl, {
           method: 'POST',
           body: formData,
-          headers: { 'User-Agent': userAgent2 }
+          headers: { 'User-Agent': userAgent2 },
+          signal: AbortSignal.timeout(TEST_CONNECTION_TIMEOUT_MS),
         });
 
         if (!testNzbResponse.ok) {
@@ -153,7 +164,7 @@ export function createNzbdavRoutes(deps: NzbdavDeps): Router {
  */
 export function createNzbdavStreamRoutes(deps: NzbdavDeps): Router {
   const router = Router({ mergeParams: true });
-  const { config, handleStream, isStreamCached, trackGrab } = deps;
+  const { config, handleStream, isStreamCached, trackGrab, getLatestVersions } = deps;
 
   // Dedup set for grab tracking — prevents concurrent requests from tracking the same grab
   // before the stream cache is populated. Entries are cleaned up after 60s.
@@ -208,6 +219,398 @@ export function createNzbdavStreamRoutes(deps: NzbdavDeps): Router {
         res.status(500).json({ error: 'Stream handler failed' });
       }
     }
+  });
+
+  // WebDAV video proxy — pipes video with server-side auth + transparent reconnect.
+  // Android ExoPlayer doesn't support credentials in redirect URLs (user:pass@host),
+  // so the stream handler redirects here and we add the Authorization header ourselves.
+  // Uses native http/https.request() for zero-overhead Node-to-Node streaming.
+  // On mid-stream upstream drops, transparently reconnects from the last byte sent
+  // using Range requests — the player never sees the interruption.
+  const MAX_PROXY_RETRIES = 3;
+  const UPSTREAM_MAX_RECONNECTS = Number(process.env.NZBDAV_STREAM_MAX_RECONNECTS || process.env.STREAM_MAX_RECONNECTS) || 30;
+  const RECONNECT_BASE_DELAY_MS = 50;
+  const RECONNECT_MAX_DELAY_MS = 8000;
+  const MAX_CONCURRENT_PER_FILE = 6;
+
+  // Per-file request tracker — aborts superseded/excess connections.
+  interface TrackedReq { id: number; rangeStart: number; isFullRequest: boolean; abort: () => void; }
+  const activeRequests = new Map<string, TrackedReq[]>();
+  let reqIdCounter = 0;
+
+  function trackRequest(filePath: string, rangeStart: number, isFullRequest: boolean, abort: () => void): number {
+    const id = ++reqIdCounter;
+    if (!activeRequests.has(filePath)) activeRequests.set(filePath, []);
+    const tracked = activeRequests.get(filePath)!;
+
+    // Kill full (non-Range) requests when a Range request arrives — the player
+    // has switched to range-based streaming and the full download just wastes
+    // bandwidth. Don't kill range-vs-range — players legitimately maintain
+    // parallel streams at different offsets (moov reads + read-ahead probes).
+    const toAbort: TrackedReq[] = [];
+    if (!isFullRequest) {
+      for (const t of tracked) {
+        if (t.isFullRequest) toAbort.push(t);
+      }
+    }
+    for (const t of toAbort) {
+      t.abort();
+    }
+
+    // Evict oldest if over the concurrency cap (after supersession cleanup)
+    const remaining = tracked.filter(t => !toAbort.includes(t));
+    while (remaining.length >= MAX_CONCURRENT_PER_FILE) {
+      const oldest = remaining.shift()!;
+      oldest.abort();
+    }
+
+    remaining.push({ id, rangeStart, isFullRequest, abort });
+    activeRequests.set(filePath, remaining);
+    return id;
+  }
+
+  function untrackRequest(filePath: string, id: number): void {
+    const tracked = activeRequests.get(filePath);
+    if (!tracked) return;
+    const filtered = tracked.filter(t => t.id !== id);
+    if (filtered.length === 0) activeRequests.delete(filePath);
+    else activeRequests.set(filePath, filtered);
+  }
+
+  const agentOpts = {
+    keepAlive: true,
+    maxSockets: 32,
+    keepAliveMsecs: 30_000,
+    scheduling: 'lifo' as const,
+  };
+  const webdavHttpAgent = new http.Agent(agentOpts);
+  const webdavHttpsAgent = new https.Agent(agentOpts);
+
+  /** Resolve stream buffer size (accessor handles env var → config → 128 MB default). */
+  function getStreamBufferBytes(): number {
+    return (config.nzbdavStreamBufferMB ?? 128) * 1024 * 1024;
+  }
+
+  /** Parse a Content-Range header (e.g. "bytes 0-999/1000"). */
+  function parseContentRange(header: string | undefined): { start: number; end: number; total: number | null } | null {
+    if (!header) return null;
+    const m = header.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)/);
+    if (!m) return null;
+    return { start: parseInt(m[1], 10), end: parseInt(m[2], 10), total: m[3] === '*' ? null : parseInt(m[3], 10) };
+  }
+
+  /** Parse a client Range header (e.g. "bytes=0-999" or "bytes=0-"). */
+  function parseClientRange(header: string | undefined): { start: number; end: number | null } | null {
+    if (!header) return null;
+    const m = header.match(/^bytes=(\d+)-(\d*)/);
+    if (!m) return null;
+    return { start: parseInt(m[1], 10), end: m[2] ? parseInt(m[2], 10) : null };
+  }
+
+  /** Make an upstream WebDAV GET request. Resolves with the response stream. */
+  function fetchUpstream(
+    url: URL,
+    headers: Record<string, string>,
+    useHttps: boolean,
+  ): Promise<http.IncomingMessage> {
+    const transport = useHttps ? https : http;
+    const agent = useHttps ? webdavHttpsAgent : webdavHttpAgent;
+    return new Promise((resolve, reject) => {
+      const r = transport.request(url, { method: 'GET', headers, timeout: 30_000, agent }, (upstream) => {
+        upstream.socket?.setNoDelay(true);
+        resolve(upstream);
+      });
+      r.on('timeout', () => r.destroy());
+      r.on('error', reject);
+      r.end();
+    });
+  }
+
+  /**
+   * Two-stage buffered proxy: upstream → PassThrough (pre-fetch) → res (delivery).
+   *
+   * The PassThrough pre-fetches data ahead of playback so that when upstream
+   * momentarily stalls (e.g. WebDAV hiccups at specific byte offsets), there's
+   * already data waiting. Manual forwarding (no pipe()) avoids Node's automatic
+   * pipe backpressure which fully pauses upstream at highWaterMark.
+   *
+   * Stage 1 (pre-fetch): upstream → buffer.write(). Pause upstream only when
+   *   buffer.writableLength exceeds half the configured total.
+   * Stage 2 (delivery): buffer → res.write(). Pause buffer only when
+   *   res.writableLength exceeds half the configured total.
+   *
+   * The configured buffer size is split evenly between both stages.
+   */
+  function consumeUpstream(
+    upstream: http.IncomingMessage,
+    res: http.ServerResponse,
+    req: http.IncomingMessage,
+    onChunk: (byteLength: number) => void,
+    skipBytes = 0,
+  ): Promise<void> {
+    const stageBytes = Math.max(1, Math.floor(getStreamBufferBytes() / 2));
+    const buffer = new PassThrough({ highWaterMark: stageBytes });
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let skipped = 0;
+
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        upstream.removeListener('data', onUpstreamData);
+        upstream.removeListener('end', onUpstreamEnd);
+        upstream.removeListener('error', onUpstreamError);
+        buffer.removeAllListeners();
+        res.removeListener('drain', onResDrain);
+        req.removeListener('close', onClientGone);
+        if (err) reject(err); else resolve();
+      };
+
+      // --- Stage 1: upstream → buffer (pre-fetch) ---
+      const onUpstreamData = (chunk: Buffer) => {
+        if (!buffer.write(chunk)) upstream.pause();
+      };
+      const onBufferDrain = () => { if (!settled) upstream.resume(); };
+      const onUpstreamEnd = () => { buffer.end(); };
+      const onUpstreamError = (err: Error) => {
+        // Force-resume so queued data drains instantly to res (in-process memory
+        // copy) even if the buffer was paused due to res backpressure. Without
+        // this, we'd wait for res to drain below 16KB before buffer un-pauses,
+        // delaying the reconnect by up to ~34s while pre-fetched data sits idle.
+        buffer.resume();
+        buffer.end();
+        // Override the normal 'end' handler to reject (triggers reconnect loop)
+        // instead of resolving (which would signal "stream complete").
+        buffer.removeListener('end', onBufferEnd);
+        buffer.on('end', () => finish(err));
+      };
+
+      // --- Stage 2: buffer → res (delivery) ---
+      const onBufferData = (chunk: Buffer) => {
+        // Skip leading bytes on reconnect (overlap from upstream)
+        if (skipBytes > 0 && skipped < skipBytes) {
+          const remaining = skipBytes - skipped;
+          if (chunk.length <= remaining) { skipped += chunk.length; return; }
+          chunk = chunk.subarray(remaining);
+          skipped = skipBytes;
+        }
+        onChunk(chunk.length);
+        res.write(chunk);
+        // Soft backpressure: pause buffer when res has a large pending backlog
+        if (res.writableLength > stageBytes) buffer.pause();
+      };
+      const onResDrain = () => { if (!settled) buffer.resume(); };
+      const onBufferEnd = () => finish();
+      const onBufferError = (err: Error) => { upstream.destroy(); finish(err); };
+
+      const onClientGone = () => {
+        if (res.writableFinished) return;
+        upstream.destroy();
+        buffer.destroy();
+        const err = new Error('Client disconnected') as NodeJS.ErrnoException;
+        err.code = 'ERR_STREAM_PREMATURE_CLOSE';
+        finish(err);
+      };
+
+      // Wire up stage 1
+      upstream.on('data', onUpstreamData);
+      upstream.on('end', onUpstreamEnd);
+      upstream.on('error', onUpstreamError);
+      buffer.on('drain', onBufferDrain);
+
+      // Wire up stage 2
+      buffer.on('data', onBufferData);
+      buffer.on('end', onBufferEnd);
+      buffer.on('error', onBufferError);
+      res.on('drain', onResDrain);
+      req.on('close', onClientGone);
+    });
+  }
+
+  router.get('/v', (req, res) => {
+    const videoPath = req.query.path as string;
+    if (!videoPath) {
+      res.status(400).send('Missing path parameter');
+      return;
+    }
+
+    const webdavBase = (config.nzbdavWebdavUrl || config.nzbdavUrl || 'http://localhost:3000').replace(/\/+$/, '');
+    const safePath = encodeWebdavPath(videoPath);
+
+    const targetUrl = new URL(`${webdavBase}${safePath}`);
+    const useHttps = targetUrl.protocol === 'https:';
+
+    const baseHeaders: Record<string, string> = {
+      'User-Agent': config.userAgents?.webdavOperations || getLatestVersions().chrome,
+    };
+    if (config.nzbdavWebdavUser && config.nzbdavWebdavPassword) {
+      baseHeaders['Authorization'] = 'Basic ' + Buffer.from(
+        `${config.nzbdavWebdavUser}:${config.nzbdavWebdavPassword}`
+      ).toString('base64');
+    }
+
+    const clientRange = parseClientRange(req.headers.range as string);
+    const isFullRequest = !req.headers.range;
+    const rangeStart = clientRange?.start ?? 0;
+
+    // Track this request and get an abort handle
+    let currentUpstream: http.IncomingMessage | undefined;
+    let aborted = false;
+    const reqId = trackRequest(safePath, rangeStart, isFullRequest, () => {
+      aborted = true;
+      currentUpstream?.destroy();
+      if (!res.writableFinished) res.destroy();
+    });
+
+    (async () => {
+      // Phase 1: Establish upstream connection (pre-header retries)
+      let upstream: http.IncomingMessage | undefined;
+      for (let attempt = 1; attempt <= MAX_PROXY_RETRIES; attempt++) {
+        if (aborted) return;
+        const headers = { ...baseHeaders };
+        if (req.headers.range) headers['Range'] = req.headers.range as string;
+        try {
+          upstream = await fetchUpstream(targetUrl, headers, useHttps);
+          currentUpstream = upstream;
+          break;
+        } catch (err: any) {
+          if (aborted) return;
+          if (attempt >= MAX_PROXY_RETRIES) {
+            console.error(`\u274C WebDAV proxy error: ${err.message}`);
+            if (!res.headersSent) res.status(502).send('WebDAV proxy error');
+            return;
+          }
+          console.warn(`\u26A0\uFE0F WebDAV proxy retry ${attempt}/${MAX_PROXY_RETRIES}: ${err.message}`);
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+      if (!upstream || aborted) { upstream?.destroy(); return; }
+
+      // Follow one upstream redirect server-side (keeps credentials out of Location header)
+      const upstreamStatus = upstream.statusCode || 200;
+      if ((upstreamStatus === 301 || upstreamStatus === 302 || upstreamStatus === 307 || upstreamStatus === 308) && upstream.headers.location) {
+        upstream.destroy();
+        const redirectTarget = new URL(upstream.headers.location, targetUrl);
+        const redirectHeaders = { ...baseHeaders };
+        // Strip credentials if redirecting to a different origin (prevents leaking to CDNs etc.)
+        if (redirectTarget.origin !== targetUrl.origin) {
+          delete redirectHeaders['Authorization'];
+        }
+        if (req.headers.range) redirectHeaders['Range'] = req.headers.range as string;
+        try {
+          upstream = await fetchUpstream(redirectTarget, redirectHeaders, redirectTarget.protocol === 'https:');
+          currentUpstream = upstream;
+          if (aborted) { upstream.destroy(); return; }
+        } catch (err: any) {
+          console.error(`\u274C WebDAV proxy redirect failed: ${err.message}`);
+          if (!res.headersSent) res.status(502).send('WebDAV proxy error');
+          return;
+        }
+      }
+
+      // Forward safe response headers
+      const fwdHeaders: Record<string, string | string[]> = {};
+      for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified', 'cache-control', 'content-disposition']) {
+        const val = upstream.headers[name];
+        if (val) fwdHeaders[name] = val;
+      }
+
+      const status = upstream.statusCode || 200;
+      if (status !== 200 && status !== 206) {
+        console.warn(`\u26A0\uFE0F WebDAV proxy: unexpected status ${status} for ${safePath}`);
+      }
+      // Parse range info for reconnect
+      const cr = parseContentRange(upstream.headers['content-range'] as string);
+      const streamRangeStart = cr?.start ?? (status === 206 ? (clientRange?.start ?? 0) : 0);
+      const rangeEnd = cr?.end ?? (fwdHeaders['content-length']
+        ? streamRangeStart + parseInt(fwdHeaders['content-length'] as string, 10) - 1
+        : null);
+      const totalSize = cr?.total ?? null;
+
+      // Send headers to client
+      res.socket?.setNoDelay(true);
+      res.writeHead(status, fwdHeaders);
+
+      // Phase 2: Stream with transparent mid-stream reconnect
+      let bytesSent = 0;
+
+      // Initial consume attempt
+      try {
+        await consumeUpstream(upstream, res, req, (n) => { bytesSent += n; });
+        if (!res.writableFinished) res.end();
+        return;
+      } catch {
+        if (aborted || req.destroyed || res.writableFinished || res.destroyed) return;
+      }
+
+      // Upstream failed while client is still alive — reconnect loop
+      for (let rc = 1; rc <= UPSTREAM_MAX_RECONNECTS; rc++) {
+        const resumeByte = streamRangeStart + bytesSent;
+        const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** Math.min(rc - 1, 3), RECONNECT_MAX_DELAY_MS);
+
+        await new Promise(r => setTimeout(r, delay));
+        if (aborted || req.destroyed || res.writableFinished || res.destroyed) return;
+
+        // Reconnect with updated Range
+        const rangeStr = rangeEnd != null ? `bytes=${resumeByte}-${rangeEnd}` : `bytes=${resumeByte}-`;
+        let newUpstream: http.IncomingMessage;
+        try {
+          newUpstream = await fetchUpstream(targetUrl, { ...baseHeaders, Range: rangeStr }, useHttps);
+          currentUpstream = newUpstream;
+          if (aborted) { newUpstream.destroy(); return; }
+        } catch {
+          continue;
+        }
+
+        // Non-2xx on reconnect — stop trying
+        if (newUpstream.statusCode && newUpstream.statusCode >= 400) {
+          console.warn(`  \u26A0\uFE0F Reconnect returned ${newUpstream.statusCode}. Ending stream.`);
+          newUpstream.destroy();
+          if (!res.writableFinished) res.end();
+          return;
+        }
+
+        // Validate Content-Range — detect file replacement
+        const newCR = parseContentRange(newUpstream.headers['content-range'] as string);
+        if (newCR && totalSize != null && newCR.total != null && newCR.total !== totalSize) {
+          console.warn(`  \u26A0\uFE0F File size changed on reconnect: ${totalSize} \u2192 ${newCR.total}. Ending stream.`);
+          newUpstream.destroy();
+          if (!res.writableFinished) res.end();
+          return;
+        }
+
+        // Handle byte overlap or gap
+        let skipBytes = 0;
+        if (newCR) {
+          if (newCR.start < resumeByte) {
+            skipBytes = resumeByte - newCR.start;
+          } else if (newCR.start > resumeByte) {
+            console.warn(`  \u26A0\uFE0F Gap in stream: expected byte ${resumeByte}, got ${newCR.start}. Ending stream.`);
+            newUpstream.destroy();
+            if (!res.writableFinished) res.end();
+            return;
+          }
+        }
+
+        try {
+          await consumeUpstream(newUpstream, res, req, (n) => { bytesSent += n; }, skipBytes);
+          if (!res.writableFinished) res.end();
+          return;
+        } catch {
+          if (aborted || req.destroyed || res.writableFinished || res.destroyed) return;
+        }
+      }
+
+      console.error(`  \u26D4 Exhausted ${UPSTREAM_MAX_RECONNECTS} reconnect attempts for ${safePath}`);
+      if (!res.writableFinished) res.end();
+    })().catch((err) => {
+      if (aborted) return;
+      console.error(`\u274C WebDAV proxy error: ${(err as Error).message}`);
+      if (!res.headersSent) res.status(502).send('WebDAV proxy error');
+    }).finally(() => {
+      untrackRequest(safePath, reqId);
+    });
   });
 
   return router;
