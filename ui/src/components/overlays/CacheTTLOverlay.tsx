@@ -76,7 +76,7 @@ export function CacheTTLOverlay({
               })()}
               <div className="text-sm font-medium text-yellow-400 mt-3">{formatTTL(cacheTTL)}</div>
               <p className="text-xs text-slate-500 mt-1">
-                How long to cache search results. Set all values to 0 to disable caching. Maximum 3 days.
+                How long to cache search results. Set all values to 0 to disable caching. Maximum 4 days.
               </p>
             </div>
             <div className="pt-4 border-t border-slate-700 space-y-2">
